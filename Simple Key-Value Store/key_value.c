@@ -18,7 +18,6 @@
 //#define DEBUG
 
 
-
 //Hash function provided by the professor
 int hash_func(char *word){
 	int hashAddress = 5381;
@@ -26,6 +25,19 @@ int hash_func(char *word){
 		hashAddress = ((hashAddress << 5) + hashAddress) + word[counter];
 	}
 	return hashAddress % POD_NUMBER_LIMIT < 0 ? -hashAddress % POD_NUMBER_LIMIT : hashAddress % POD_NUMBER_LIMIT;
+}
+
+void moveMemory(char *mem_addr){
+
+	//We know the pod is full so there is POD_SIZE number of key_value pairs in the current pod
+
+	//Swap every element on the array except the first one (which will be deleted) to free the last spot
+	//This operation is costly but we have to do so to the prevent the case where the key_value is not in the array already
+	//and at the same time to respect the FIFO order.
+	for(int j = 1; j < POD_SIZE; j++){
+		memcpy(mem_addr + (j-1)*sizeof(struct node), mem_addr + j*sizeof(struct node), sizeof(struct node));
+	}
+
 }
 
 
@@ -75,6 +87,8 @@ int  kv_store_create(const char *name){
 		memcpy(mem_addr + sizeof(struct node) * POD_SIZE * POD_NUMBER_LIMIT, pod_index , sizeof(int) * POD_NUMBER_LIMIT);
 		free(pod_index);
 	}
+
+	munmap(mem_addr, length);
 
 	return 0;
 }
@@ -136,6 +150,12 @@ int  kv_store_write(const char *key, const char *value){
 	memcpy(pod_index, mem_addr + sizeof(struct node) * POD_SIZE * POD_NUMBER_LIMIT, sizeof(pod_index));
 
 
+	//If the pod is full delete the first key_value swap all the others -1 position
+	if (pod_index[hashkey] == POD_SIZE){
+		moveMemory(mem_addr + hashkey*POD_SIZE);
+		pod_index[hashkey]--;
+	}
+
 	//Put the element in the shared memory using its hashmap key and the index of its new position
 	//(add it to the memory address of the shared memory)
 	memcpy(mem_addr + hashkey*POD_SIZE + pod_index[hashkey]*sizeof(struct node), new_node, sizeof(struct node));
@@ -144,6 +164,8 @@ int  kv_store_write(const char *key, const char *value){
 	//Update the index array of the pods (to track the number of elements into each pod) and copy array to memory
 	pod_index[hashkey]++;
 	memcpy(mem_addr + sizeof(struct node) * POD_SIZE * POD_NUMBER_LIMIT, pod_index, sizeof(pod_index));
+	printf("Numbers in store: %d\n", pod_index[hashkey]);
+	munmap(mem_addr, s.st_size);
 
 	return 0;
 }
@@ -203,35 +225,64 @@ char *kv_store_read(const char *key){
 		return 0;
 	}
 
+	/*
+	struct node *new_node = malloc(sizeof(struct node));
+	printf("test\n");
+	memcpy(new_node, mem_addr + hashkey*POD_SIZE + 0*sizeof(struct node), sizeof(struct node));
+
+	printf("%s\n", new_node->value);
+
+	memcpy(new_node, mem_addr + hashkey*POD_SIZE + 1*sizeof(struct node), sizeof(struct node));
+
+	printf("%s\n", new_node->value);
+
+	memcpy(new_node, mem_addr + hashkey*POD_SIZE + 2*sizeof(struct node), sizeof(struct node));
+
+	printf("%s\n", new_node->value);
+
+	printf("test\n");
+	 */
+
 	//Find the index of the correct value to read (FIFO). If no value from that key was yet read, take the first one encountered
-	int read_index;
-	for (int i = 0; i < pod_index[hashkey]; i++){
+	//When we hit a -1, all the values after that are uninitialized so don't need to traverse the whole array
+	int i;
+	for (i = 0; i < READ_CYCLING_MAX; i++){
 		if (read_array[i]->index == -1) {
 			strcpy(read_array[i]->key, normalizedKey);
 			read_array[i]->index = 0;
-			read_index = 0;
 			break;
 		}
 
 		if(!strcmp(read_array[i]->key, normalizedKey)){
 
 			read_array[i]->index++;
-			read_index = read_array[i]->index;
+			break;
 		}
 	}
 
 	//Count each corresponding key until the count is equal to the index we previously created
 	struct node *new_node = malloc(sizeof(struct node));
-	int count = -1;
-	for(int i = 0; i < pod_index[hashkey]; i++){
-		memcpy(new_node, mem_addr + hashkey*POD_SIZE + i*sizeof(struct node), sizeof(struct node));
+	int count = 0;
+	for(int j = 0; j < pod_index[hashkey]; j++){
+		memcpy(new_node, mem_addr + hashkey*POD_SIZE + j*sizeof(struct node), sizeof(struct node));
 		if(!strcmp(new_node->key, normalizedKey)){
-			count++;
-			if(count == read_index){
+			if(count == read_array[i]->index){
 				break;
 			}
+			count++;
+		}
+
+		//If we got to then end of the array, therefore we have to go back to beginning and pick the first read value
+		if(j == pod_index[hashkey]-1){
+			//Avoid infinite loop if value not found
+			if(count == 0) break;
+			j = -1;
+			count = 0;
+			read_array[i]->index = 0;
 		}
 	}
+
+	munmap(mem_addr, s.st_size);
 
 	//If we did not find the right key, return nothing found
 	if(strcmp(new_node->key, normalizedKey)){
@@ -245,6 +296,7 @@ char *kv_store_read(const char *key){
 
 	return value;
 }
+
 
 char **kv_store_read_all(const char *key){
 
