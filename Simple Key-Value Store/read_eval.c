@@ -2,36 +2,15 @@
 #include <signal.h>
 
 //Global variables
-
-//Name of the database (shared across the same session)
-char *db_name;
 char *buffer = NULL;
-struct index *read_array[READ_CYCLING_MAX];
 
-void free_read_cycle(){
-	//Each time we access a new database, reset the count for the read cycling OR before exit application
-	for (int i = 0; i < READ_CYCLING_MAX; i++){
-		if (read_array[i] == NULL) {
-			break;
-		}
-		free(read_array[i]);
-	}
-}
-
-//The count for the read cycling
-void initialize(){
-	for (int i = 0; i < READ_CYCLING_MAX; i++){
-		read_array[i] = malloc(sizeof(struct node));
-		read_array[i]->index = -1;
-	}
-}
 
 //To take care of the signal CTLR+C to exit program and free the remaining variable at same time
 static void sigHandler(int sig){
 	if(sig == SIGINT){
-		free(db_name);
+		kv_delete_db();
+		//free_to_exit();
 		free(buffer);
-		free_read_cycle();
 		exit(EXIT_SUCCESS);
 	}
 }
@@ -71,17 +50,34 @@ void read_eval() {
 	while ((getline(&buffer, &length, stdin) != 0)) {
 		char* buffer_to_free = buffer;
 		char** cmd = tokenize(buffer, ' ');
-		if (strcmp(cmd[0], "exit") == 0) {
+		//Make sure the line is not empty
+		if(cmd[0] == NULL){
+		}
+		else if (strcmp(cmd[0], "exit") == 0) {
+			kv_delete_db();
+			//free_to_exit();
 			free(buffer_to_free);
 			free(cmd);
 			return;
 		} else if (strcmp(cmd[0], "create") == 0) {
-			free(db_name);
-			free_read_cycle();
+			//kv_delete_db();
 			initialize();
 			printf("exec code = %d\n", kv_store_create(cmd[1]));
 		} else if (strcmp(cmd[0], "write") == 0) {
-			printf("exec code = %d\n", kv_store_write(cmd[1], cmd[2]));
+			char *args1, *args2;
+
+			//Input validation
+			if(cmd[1] == NULL || cmd[2] == NULL){
+				printf("Please enter a valid key and value...\n");
+				printf("exec code = -1\n");
+			}
+			else {
+				args1 = strdup(cmd[1]); args2 = strdup(cmd[2]);
+				printf("exec code = %d\n", kv_store_write(args1, args2));
+
+				free(args1);
+				free(args2);
+			}
 		} else if (strcmp(cmd[0], "read") == 0) {
 			char* content = kv_store_read(cmd[1]);
 			if (content == NULL) {
@@ -104,13 +100,21 @@ void read_eval() {
 				free(content);
 			}
 		}
+		else if (strcmp(cmd[0], "saveexit") == 0) {
+					free_to_exit();
+					free(buffer_to_free);
+					free(cmd);
+					return;
+				}
 		else if (!strcmp(cmd[0], "help") || !strcmp(cmd[0], "-h")) {
-
-			printf("1. Please use CTRL+C to exit program and effectively clear all the memory\n");
-			printf("2. Key bigger than %d char will be automatically truncated\n", KEY_MAX_LENGTH-1);
-			printf("3. Value bigger than %d char will be automatically truncated\n", VALUE_MAX_LENGTH-1);
-			printf("4. If you change database with the command CREATE, the read cycle will be reset\n");
-			//printf("4. By default the Key-Value Store writes to: %s\n", DATA_BASE_NAME);
+			printf("1. Please use CTRL+C to OR type 'exit' to exit program and effectively clear all the memory\n");
+			printf("2. By default when you quit, the key-value store created will be deleted\n");
+			printf("3. To quit but keep the store saved. Type 'saveexit'. The saved store will then be located at /dev/shm/ for futur sessions\n");
+			printf("4. Key bigger than %d char will be automatically truncated\n", KEY_MAX_LENGTH-1);
+			printf("5. Value bigger than %d char will be automatically truncated\n", VALUE_MAX_LENGTH-1);
+			printf("6. If you change database with the command CREATE, the read cycle will be reset for the process\n");
+			printf("7. If a pod is full, the oldest entry in the pod will be deleted regardless of its key (FIFO)\n");
+			//printf("8. SET MAXIMUM NUMBER OF KEY-VALUE PAIRS\n"); //Not implemented yet
 		}
 		free(buffer_to_free);
 		free(cmd);
@@ -133,3 +137,4 @@ int main(int argc, char const *argv[]) {
 	read_eval();
 	return 0;
 }
+
